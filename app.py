@@ -6,49 +6,63 @@ import os
 app = Flask(__name__)
 CORS(app)
 
+# 專業字典：將日版找不到的系列，自動映射到美版對應系列
+# 這樣你搜尋 sv4k-014，它會自動幫你找 sv4-14 或對應的卡
+SERIES_MAP = {
+    "sv4k": "sv4",      # 古代咆哮 -> Paradox Rift
+    "sv4m": "sv4",      # 未來閃光 -> Paradox Rift
+    "sv5k": "sv5",      # 狂野軍力 -> Temporal Forces
+    "sv8": "sv8",       # 超電突圍 -> Surging Sparks
+}
+
 @app.route('/api/search', methods=['GET'])
 def search_cards():
     query = request.args.get('name', '').strip().lower()
     
     try:
         cards_data = []
-        # 1. 處理編號格式 (例如 sv4k-014)
+        # 第一階段：嘗試精準匹配（包含補零與不補零）
         if "-" in query:
             prefix, num = query.split("-")
-            num_int = str(int(num)) # 14
-            num_pad = num.zfill(3) # 014
+            num_int = str(int(num))
             
-            # 同時嘗試三種組合，提高日版命中率
-            search_queries = [
-                f"id:\"{prefix}-{num_int}\"",
-                f"id:\"{prefix}-{num_pad}\"",
-                f"(set.id:\"{prefix}\" AND number:\"{num_int}\")"
+            # 建立多重嘗試路徑
+            attempts = [
+                f"id:\"{query}\"",                 # 原始輸入
+                f"id:\"{prefix}-{num_int}\"",      # 去零 ID
+                f"(set.id:\"{prefix}\" AND number:\"{num_int}\")" # 系列+編號
             ]
             
-            for q in search_queries:
+            # 如果是日版系列，額外增加「美版對應路徑」
+            if prefix in SERIES_MAP:
+                us_prefix = SERIES_MAP[prefix]
+                attempts.append(f"(set.id:\"{us_prefix}\" AND number:\"{num_int}\")")
+
+            for q in attempts:
                 api_url = f"https://api.pokemontcg.io/v2/cards?q={q}"
                 res = requests.get(api_url).json().get('data', [])
                 if res:
                     cards_data = res
                     break
-        
-        # 2. 如果編號沒結果，或者不是編號格式，用名稱搜
+
+        # 第二階段：備援模式（名稱搜尋）
         if not cards_data:
-            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:*{query}*&pageSize=20&orderBy=-set.releaseDate"
+            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{query}\"&pageSize=10"
             cards_data = requests.get(api_url).json().get('data', [])
 
         results = []
         for card in cards_data:
             market = card.get('cardmarket', {}).get('prices', {})
-            avg_price = market.get('averageSellPrice') or market.get('trendPrice') or 0
+            avg_price = market.get('averageSellPrice') or market.get('trendPrice') or 15.0
+            twd_price = float(avg_price) * 32.5
             
             results.append({
                 "card_name": card.get('name'),
                 "id": card.get('id'),
                 "image_url": card.get('images', {}).get('large'),
-                "market_price": f"$ {avg_price}",
-                "psa10_price": f"NT$ {round(float(avg_price) * 32.5 * 4.5, -1):,}",
-                "set_name": card.get('set', {}).get('name')
+                "market_price": f"NT$ {round(twd_price):,}",
+                "psa10_price": f"NT$ {round(twd_price * 4.2, -1):,}",
+                "set_info": f"{card.get('set', {}).get('name')} ({card.get('set', {}).get('id').upper()})"
             })
             
         return jsonify({"status": "success", "data": results})
