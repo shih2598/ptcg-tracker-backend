@@ -6,13 +6,21 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# 專業字典：將日版找不到的系列，自動映射到美版對應系列
-# 這樣你搜尋 sv4k-014，它會自動幫你找 sv4-14 或對應的卡
-SERIES_MAP = {
-    "sv4k": "sv4",      # 古代咆哮 -> Paradox Rift
-    "sv4m": "sv4",      # 未來閃光 -> Paradox Rift
-    "sv5k": "sv5",      # 狂野軍力 -> Temporal Forces
-    "sv8": "sv8",       # 超電突圍 -> Surging Sparks
+# --- 專業資料對照橋樑 (精準度核心) ---
+# 邏輯：[日/台版編號] -> [美版 API 實際 ID]
+DATA_BRIDGE = {
+    "sv4k-014": "sv4-66",    # 陸地水母 ex (日版 sv4k-014 -> 美版 sv4-66)
+    "sv4k-14": "sv4-66",
+    "m2a-014": "sv3-125",   # 範例：噴火龍 ex
+    "sv8-106": "sv8-106",   # 超電突圍 (若編號恰巧相同)
+}
+
+# --- 系列名稱對照 ---
+SET_MAP = {
+    "sv4k": "Paradox Rift",
+    "sv4m": "Paradox Rift",
+    "sv8": "Surging Sparks",
+    "sv7": "Stellar Crown"
 }
 
 @app.route('/api/search', methods=['GET'])
@@ -21,48 +29,46 @@ def search_cards():
     
     try:
         cards_data = []
-        # 第一階段：嘗試精準匹配（包含補零與不補零）
-        if "-" in query:
+        
+        # 1. 第一層：精準 ID 橋接
+        if query in DATA_BRIDGE:
+            target_id = DATA_BRIDGE[query]
+            api_url = f"https://api.pokemontcg.io/v2/cards/{target_id}"
+            res = requests.get(api_url).json()
+            if 'data' in res:
+                cards_data = [res['data']]
+
+        # 2. 第二層：系列映射搜尋
+        if not cards_data and "-" in query:
             prefix, num = query.split("-")
             num_int = str(int(num))
             
-            # 建立多重嘗試路徑
-            attempts = [
-                f"id:\"{query}\"",                 # 原始輸入
-                f"id:\"{prefix}-{num_int}\"",      # 去零 ID
-                f"(set.id:\"{prefix}\" AND number:\"{num_int}\")" # 系列+編號
-            ]
-            
-            # 如果是日版系列，額外增加「美版對應路徑」
-            if prefix in SERIES_MAP:
-                us_prefix = SERIES_MAP[prefix]
-                attempts.append(f"(set.id:\"{us_prefix}\" AND number:\"{num_int}\")")
+            if prefix in SET_MAP:
+                set_name = SET_MAP[prefix]
+                # 嘗試在美版對應系列中搜尋該編號 (雖然不一定 100% 中，但比亂搜好)
+                api_url = f"https://api.pokemontcg.io/v2/cards?q=set.name:\"{set_name}\" number:\"{num_int}\""
+                cards_data = requests.get(api_url).json().get('data', [])
 
-            for q in attempts:
-                api_url = f"https://api.pokemontcg.io/v2/cards?q={q}"
-                res = requests.get(api_url).json().get('data', [])
-                if res:
-                    cards_data = res
-                    break
-
-        # 第二階段：備援模式（名稱搜尋）
+        # 3. 第三層：通用搜尋
         if not cards_data:
-            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{query}\"&pageSize=10"
+            # 優先搜尋 ID
+            api_url = f"https://api.pokemontcg.io/v2/cards?q=id:\"{query}\" OR name:\"{query}\"&pageSize=12"
             cards_data = requests.get(api_url).json().get('data', [])
 
         results = []
         for card in cards_data:
             market = card.get('cardmarket', {}).get('prices', {})
-            avg_price = market.get('averageSellPrice') or market.get('trendPrice') or 15.0
-            twd_price = float(avg_price) * 32.5
+            # 取得即時行情並轉換台幣 (匯率 32.5)
+            price_usd = market.get('averageSellPrice') or market.get('trendPrice') or 0
+            twd_price = float(price_usd) * 32.5
             
             results.append({
                 "card_name": card.get('name'),
-                "id": card.get('id'),
+                "id": card.get('id').toUpperCase(),
                 "image_url": card.get('images', {}).get('large'),
-                "market_price": f"NT$ {round(twd_price):,}",
-                "psa10_price": f"NT$ {round(twd_price * 4.2, -1):,}",
-                "set_info": f"{card.get('set', {}).get('name')} ({card.get('set', {}).get('id').upper()})"
+                "market_price_twd": f"NT$ {round(twd_price):,}",
+                "psa10_est": f"NT$ {round(twd_price * 4.5, -1):,}",
+                "set_name": card.get('set', {}).get('name')
             })
             
         return jsonify({"status": "success", "data": results})
