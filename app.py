@@ -11,32 +11,44 @@ def search_cards():
     query = request.args.get('name', '').strip().lower()
     
     try:
-        # 針對 sv4k-014 這種日版格式做多重嘗試
+        cards_data = []
+        # 1. 處理編號格式 (例如 sv4k-014)
         if "-" in query:
             prefix, num = query.split("-")
-            num_int = str(int(num)) # 去除前導零 (014 -> 14)
-            # 優先嘗試精準 ID 匹配 (包含日版常用後綴)
-            api_url = f"https://api.pokemontcg.io/v2/cards?q=(id:\"{query}\" OR id:\"{prefix}-{num_int}\" OR (set.id:\"{prefix}\" AND number:\"{num_int}\"))"
-        else:
-            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:*{query}*&pageSize=20&orderBy=-set.releaseDate"
-
-        response = requests.get(api_url)
-        cards_data = response.json().get('data', [])
+            num_int = str(int(num)) # 14
+            num_pad = num.zfill(3) # 014
+            
+            # 同時嘗試三種組合，提高日版命中率
+            search_queries = [
+                f"id:\"{prefix}-{num_int}\"",
+                f"id:\"{prefix}-{num_pad}\"",
+                f"(set.id:\"{prefix}\" AND number:\"{num_int}\")"
+            ]
+            
+            for q in search_queries:
+                api_url = f"https://api.pokemontcg.io/v2/cards?q={q}"
+                res = requests.get(api_url).json().get('data', [])
+                if res:
+                    cards_data = res
+                    break
         
+        # 2. 如果編號沒結果，或者不是編號格式，用名稱搜
+        if not cards_data:
+            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:*{query}*&pageSize=20&orderBy=-set.releaseDate"
+            cards_data = requests.get(api_url).json().get('data', [])
+
         results = []
         for card in cards_data:
             market = card.get('cardmarket', {}).get('prices', {})
             avg_price = market.get('averageSellPrice') or market.get('trendPrice') or 0
             
-            # 核心邏輯：如果是日版 ID (例如包含 jp, sv, s)，優先顯示
             results.append({
                 "card_name": card.get('name'),
                 "id": card.get('id'),
-                "image_url": card.get('images', {}).get('large'), # 大圖通常比較清楚
+                "image_url": card.get('images', {}).get('large'),
                 "market_price": f"$ {avg_price}",
-                "psa10_price": f"NT$ {round(float(avg_price) * 32.5 * 4, -1):,}",
-                "trend_7d": "+2.5%",
-                "trend_30d": "+8.9%"
+                "psa10_price": f"NT$ {round(float(avg_price) * 32.5 * 4.5, -1):,}",
+                "set_name": card.get('set', {}).get('name')
             })
             
         return jsonify({"status": "success", "data": results})
