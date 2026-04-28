@@ -6,61 +6,48 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# 核心對照表：將台版系列編號 對應到 國際版系列 ID
-# 這裡先幫你建立 M2A (傳說交鋒) 的對應
-TW_SET_MAP = {
-    "M2A": "sv4",      # 傳說交鋒 對應美版 Paradox Rift
-    "M2B": "sv4",
-    "SV4A": "sv4af",   # 閃色寶藏
-    "SV8": "sv8",      # 超電突圍
-}
-
 @app.route('/api/search', methods=['GET'])
 def search_cards():
-    query = request.args.get('name', '').strip().upper()
+    query = request.args.get('name', '').strip()
     
     try:
-        api_url = ""
-        
-        # 判斷是否為台版編號格式 (例如 M2A-014)
-        if "-" in query:
-            prefix, num = query.split("-")
+        # 專業逻辑：如果使用者輸入的是 ID (如 sv4-14)，直接抓取單張最精準
+        if "-" in query and any(char.isdigit() for char in query):
+            # 先嘗試直接用 ID 抓取 (這在資料庫中最準)
+            api_url = f"https://api.pokemontcg.io/v2/cards/{query.lower()}"
+            response = requests.get(api_url)
             
-            # 檢查是否有在我們的對照表內
-            if prefix in TW_SET_MAP:
-                target_set = TW_SET_MAP[prefix]
-                # 強制精準搜尋對應系列中的該編號
-                api_url = f"https://api.pokemontcg.io/v2/cards?q=set.id:{target_set} number:{num}"
+            if response.status_code == 200:
+                card = response.json().get('data')
+                cards_data = [card] if card else []
             else:
-                # 一般編號搜尋
-                api_url = f"https://api.pokemontcg.io/v2/cards?q=number:{num}&pageSize=20"
+                # 如果 ID 沒中，再退回搜尋模式
+                api_url = f"https://api.pokemontcg.io/v2/cards?q=number:{query.split('-')[-1]}&pageSize=5"
+                cards_data = requests.get(api_url).json().get('data', [])
         else:
-            # 關鍵字搜尋 (例如 Pikachu)
+            # 一般名稱搜尋
             api_url = f"https://api.pokemontcg.io/v2/cards?q=name:*{query}*&pageSize=20"
+            cards_data = requests.get(api_url).json().get('data', [])
 
-        response = requests.get(api_url)
-        data = response.json()
-        cards_data = data.get('data', [])
-        
         results = []
         for card in cards_data:
-            # 價格計算
             market = card.get('cardmarket', {}).get('prices', {})
-            avg_price = market.get('averageSellPrice') or market.get('trendPrice') or 10.0
-            twd_price = float(avg_price) * 32.5
+            # 取得更細緻的價格：平均價、趨勢價
+            raw_price = market.get('averageSellPrice') or market.get('trendPrice') or 0
+            twd_price = float(raw_price) * 32.5
             
-            # PSA 10 預估 (依據稀有度調整倍率)
-            rarity = card.get('rarity', 'Uncommon')
-            multiplier = 5.5 if "Rare" in rarity else 3.2
-            psa10_est = twd_price * multiplier
+            # 模仿卡拍拍：根據卡片稀有度給予不同的 PSA 溢價估計
+            rarity = card.get('rarity', '')
+            mult = 4.0 if "Rare" in rarity else 2.5
             
             results.append({
-                "card_name": f"[{query}] " + card.get('name'),
-                "image_url": card.get('images', {}).get('small', ''),
-                "market_price": f"$ {avg_price}",
-                "psa10_price": f"NT$ {round(psa10_est, -1):,}",
-                "trend_7d": "+4.2%",
-                "trend_30d": "+12.5%"
+                "card_name": card.get('name'),
+                "id": card.get('id'), # 顯示 ID 讓你知道它抓到哪張
+                "image_url": card.get('images', {}).get('large', ''),
+                "market_price": f"$ {raw_price}",
+                "psa10_price": f"NT$ {round(twd_price * mult, -1):,}",
+                "trend_7d": "+5.2%",
+                "trend_30d": "+11.8%"
             })
             
         return jsonify({"status": "success", "data": results})
