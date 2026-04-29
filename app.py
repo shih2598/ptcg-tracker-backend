@@ -8,35 +8,32 @@ CORS(app)
 
 @app.route('/api/search', methods=['GET'])
 def search_cards():
-    user_input = request.args.get('name', '').strip().lower()
-    if not user_input:
-        return jsonify({"status": "error", "message": "請輸入內容"})
+    query = request.args.get('name', '').strip().lower()
+    if not query:
+        return jsonify({"status": "error", "message": "無輸入"})
     
     try:
-        # 1. 處理輸入格式：將 sv4k-014 轉換為 sv4k-14
-        if "-" in user_input:
-            parts = user_input.split("-")
+        # 核心邏輯：處理 sv4k-014 -> sv4k-14
+        if "-" in query:
+            parts = query.split("-")
             prefix = parts[0]
-            # 將 014 轉為數字 14 再轉回字串，去除前導零
+            # 強制將編號轉為整數再轉回字串，去除前導 0
             num = str(int(parts[1]))
-            # 這是美版 API 收錄日版卡片的標準 ID 格式
             target_id = f"{prefix}-{num}"
+            # 使用 id 精準搜尋
             api_url = f"https://api.pokemontcg.io/v2/cards?q=id:\"{target_id}\""
         else:
-            # 一般關鍵字搜尋
-            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{user_input}\"&pageSize=5"
+            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{query}\"&pageSize=5"
 
-        headers = {'X-Api-Key': 'YOUR_API_KEY'} # 若有 Key 可加快速度
-        response = requests.get(api_url, headers=headers)
-        cards_data = response.json().get('data', [])
+        res = requests.get(api_url).json()
+        cards_data = res.get('data', [])
 
         results = []
         for card in cards_data:
-            # 取得日版環境行情
             market = card.get('cardmarket', {}).get('prices', {})
-            # 優先使用平均售價
-            usd_price = market.get('averageSellPrice') or market.get('trendPrice') or 0
-            twd_price = float(usd_price) * 32.5
+            # 取得日版行情 (換算台幣)
+            price_raw = market.get('averageSellPrice') or market.get('trendPrice') or 0
+            twd_price = float(price_raw) * 32.5
             
             results.append({
                 "card_name": card.get('name'),
@@ -44,8 +41,7 @@ def search_cards():
                 "image_url": card.get('images', {}).get('large'),
                 "market_price": f"NT$ {round(twd_price):,}" if twd_price > 0 else "市場議價",
                 "psa10": f"NT$ {round(twd_price * 4.5, -1):,}" if twd_price > 0 else "---",
-                "rarity": card.get('rarity', '一般版本'),
-                "set_name": card.get('set', {}).get('name')
+                "rarity": card.get('rarity', '一般版本')
             })
             
         return jsonify({"status": "success", "data": results})
