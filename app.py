@@ -6,48 +6,31 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# --- 核心對照表：這就是殺掉 Zekrom 的關鍵 ---
-# 邏輯：只要輸入日版編號，我們就強行指定美版正確 ID
+# --- 終極精準對照表 (使用美版 API 唯一 ID) ---
 DATA_BRIDGE = {
-    "sv4k-014": "sv4-66",   # 陸地水母 ex (日版 14 號 -> 美版 66 號)
-    "sv4k-14": "sv4-66",
-    "m2a-014": "sv3-125",
-    "sv8-106": "sv8-106"
-}
-
-# --- 系列映射 ---
-SET_MAP = {
-    "sv4k": "Paradox Rift",
-    "sv8": "Surging Sparks"
+    # 日版 sv4k-014 真正的美版身分證是 sv4-201 (Toedscruel ex)
+    "sv4k-014": "sv4-201", 
+    "sv4k-14": "sv4-201",
+    # 日版 sm12a-147 (通常是全圖莉莉艾或熱門卡) 需對應美版 ID
+    "sm12a-147": "sm12-251" 
 }
 
 @app.route('/api/search', methods=['GET'])
 def search_cards():
     query = request.args.get('name', '').strip().lower()
-    if not query:
-        return jsonify({"status": "error", "message": "無輸入內容"})
+    if not query: return jsonify({"status": "error", "message": "無輸入"})
     
     try:
         cards_data = []
-        
-        # 邏輯 1：優先走我們設定的精準對照 (Mapping)
+        # 邏輯 1：身分證直接鎖定 (最準)
         if query in DATA_BRIDGE:
             target_id = DATA_BRIDGE[query]
             res = requests.get(f"https://api.pokemontcg.io/v2/cards/{target_id}").json()
-            if 'data' in res:
-                cards_data = [res['data']]
+            if 'data' in res: cards_data = [res['data']]
 
-        # 邏輯 2：如果沒中對照表，嘗試「系列+編號」精準匹配
-        if not cards_data and "-" in query:
-            prefix, num = query.split("-")
-            if prefix in SET_MAP:
-                s_name = SET_MAP[prefix]
-                api_url = f"https://api.pokemontcg.io/v2/cards?q=set.name:\"{s_name}\" number:\"{int(num)}\""
-                cards_data = requests.get(api_url).json().get('data', [])
-
-        # 邏輯 3：以上皆失敗，才用名稱搜尋 (這時才有可能出現 Zekrom，作為墊底)
+        # 邏輯 2：若沒在表內，才走關鍵字搜尋
         if not cards_data:
-            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{query}\"&pageSize=5"
+            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{query}\" OR id:\"{query}\"&pageSize=4"
             cards_data = requests.get(api_url).json().get('data', [])
 
         results = []
@@ -60,11 +43,10 @@ def search_cards():
                 "card_name": card.get('name'),
                 "id": card.get('id').upper(),
                 "image_url": card.get('images', {}).get('large'),
-                "market_price_twd": f"NT$ {round(twd_price):,}" if twd_price > 0 else "計算中",
+                "market_price_twd": f"NT$ {round(twd_price):,}" if twd_price > 0 else "議價",
                 "psa10_est": f"NT$ {round(twd_price * 4.5, -1):,}" if twd_price > 0 else "---",
                 "set_name": card.get('set', {}).get('name')
             })
-            
         return jsonify({"status": "success", "data": results})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
