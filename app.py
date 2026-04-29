@@ -6,56 +6,57 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# --- 中文名稱映射表 (銷售常用熱門卡) ---
-# 這是為了解決 API 聽不懂中文的問題，我們可以手動擴充
-CN_TO_EN = {
+# 內建翻譯字典：支援中文搜尋 (你可以隨時手動增加常用熱門卡)
+TRANSLATE_MAP = {
     "炭小侍": "Charcadet",
     "噴火龍": "Charizard",
     "皮卡丘": "Pikachu",
-    "陸地水母": "Toedscruel",
-    "捷克羅姆": "Zekrom"
+    "密勒頓": "Miraidon",
+    "古勒頓": "Koraidon"
 }
 
 @app.route('/api/search', methods=['GET'])
 def search_cards():
-    query = request.args.get('name', '').strip()
-    if not query: return jsonify({"status": "error", "message": "無輸入"})
-    
-    # 轉換中文到英文搜尋
-    search_term = CN_TO_EN.get(query, query).lower()
-    
+    user_query = request.args.get('name', '').strip()
+    if not user_query:
+        return jsonify({"status": "error", "message": "無輸入"})
+
+    # 1. 優先判斷是否為中文搜尋
+    search_term = TRANSLATE_MAP.get(user_query, user_query).lower()
+
     try:
-        # 1. 處理編號格式 (例如 SV4K-014 -> sv4k-14)
+        # 2. 判斷是否為日版編號格式 (如 SV4K-014)
         if "-" in search_term:
             parts = search_term.split("-")
             prefix = parts[0]
             try:
-                num = str(int(parts[1])) # 014 轉 14
+                # 自動修正編號：014 -> 14 (API 認得的格式)
+                num = str(int(parts[1]))
                 api_url = f"https://api.pokemontcg.io/v2/cards?q=id:\"{prefix}-{num}\" OR (number:\"{num}\" AND id:\"{prefix}*\")"
             except:
                 api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{search_term}\""
         else:
-            # 2. 處理名稱搜尋
-            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{search_term}\"&pageSize=12"
+            api_url = f"https://api.pokemontcg.io/v2/cards?q=name:\"{search_term}\"&pageSize=10"
 
         res = requests.get(api_url).json()
         cards_data = res.get('data', [])
 
         results = []
         for card in cards_data:
-            # 這裡我們只抓日版卡片 (如果 ID 包含關鍵字)
-            # 或者不篩選，直接顯示找到的結果
+            # 取得行情與匯率換算
             market = card.get('cardmarket', {}).get('prices', {})
-            price_usd = market.get('averageSellPrice') or market.get('trendPrice') or 0
-            twd_price = float(price_usd) * 32.5
+            price_raw = market.get('averageSellPrice') or market.get('trendPrice') or 0
+            twd_price = float(price_raw) * 32.5
             
             results.append({
-                "card_name": card.get('name'),
+                "card_name": user_query if user_query in TRANSLATE_MAP else card.get('name'),
                 "id": card.get('id').upper(),
                 "image_url": card.get('images', {}).get('large'),
                 "market_price": f"NT$ {round(twd_price):,}" if twd_price > 0 else "市場議價",
-                "psa10": f"NT$ {round(twd_price * 4.5, -1):,}" if twd_price > 0 else "---"
+                "psa10": f"NT$ {round(twd_price * 4.5, -1):,}" if twd_price > 0 else "---",
+                "set_name": card.get('set', {}).get('name')
             })
+            
         return jsonify({"status": "success", "data": results})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
